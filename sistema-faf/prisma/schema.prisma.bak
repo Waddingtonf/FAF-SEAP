@@ -1,0 +1,177 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model ContaBancaria {
+  id           String         @id @default(cuid())
+  numero_conta String         @unique
+  descricao    String?
+  instrumentos FafPlanoLdo[]
+  createdAt    DateTime       @default(now())
+  updatedAt    DateTime       @updatedAt
+}
+
+model FafPlanoLdo {
+  id                String                 @id @default(cuid())
+  instrumento       String                 // Ex: FAF 2016, FAF 2023 Voluntário, FONTE 500
+  modalidade        String?                // Ex: OBRAS, CUSTEIO, CAPITAL
+  ano               Int?                   // Optional numeric year 
+  conta_bancaria_id String
+  valor_total       Float                  @default(0)
+  conta_bancaria    ContaBancaria          @relation(fields: [conta_bancaria_id], references: [id], onDelete: Cascade)
+  planos_aplicacao  PlanoAplicacaoDetalhado[]
+  processos         Processo[]
+  createdAt         DateTime               @default(now())
+  updatedAt         DateTime               @updatedAt
+}
+
+model PlanoAplicacaoDetalhado {
+  id               String      @id @default(cuid())
+  faf_id           String
+  natureza_despesa String?
+  segmento_eixo    String?
+  item_nome        String
+  descricao        String?
+  valor_autorizado Float
+  quantidade       Float?
+  unidade_medida   String?
+  faf              FafPlanoLdo @relation(fields: [faf_id], references: [id], onDelete: Cascade)
+  processos        Processo[]
+  createdAt        DateTime    @default(now())
+  updatedAt        DateTime    @updatedAt
+}
+
+model Processo {
+  id                 String                   @id @default(cuid())
+  numero_processo    String                   @unique
+  faf_id             String
+  plano_aplicacao_id String?
+  fornecedor         String?
+  faf                FafPlanoLdo              @relation(fields: [faf_id], references: [id], onDelete: Cascade)
+  plano_aplicacao    PlanoAplicacaoDetalhado? @relation(fields: [plano_aplicacao_id], references: [id])
+  contratos          Contrato[]
+  empenhos           Empenho[]
+  createdAt          DateTime                 @default(now())
+  updatedAt          DateTime                 @updatedAt
+}
+
+model Contrato {
+  id              String          @id @default(cuid())
+  numero_contrato String
+  processo_id     String
+  fornecedor      String?
+  objeto          String?
+  valor_contrato  Float
+  processo        Processo        @relation(fields: [processo_id], references: [id], onDelete: Cascade)
+  itens           ContratoItem[]
+  notas_fiscais   NotaFiscal[]
+  ordens_bancarias OrdemBancariaContrato[]
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+}
+
+model ContratoItem {
+  id             String            @id @default(cuid())
+  contrato_id    String
+  descricao      String
+  quantidade     Float
+  valor_unitario Float
+  contrato       Contrato          @relation(fields: [contrato_id], references: [id], onDelete: Cascade)
+  notas_fiscais  NotaFiscalItem[]
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+}
+
+model Empenho {
+  id               String               @id @default(cuid())
+  numero_empenho   String
+  processo_id      String
+  valor_empenho    Float
+  data_empenho     DateTime?
+  processo         Processo             @relation(fields: [processo_id], references: [id], onDelete: Cascade)
+  ordens_bancarias OrdemBancariaEmpenho[]
+  createdAt        DateTime             @default(now())
+  updatedAt        DateTime             @updatedAt
+}
+
+model NotaFiscal {
+  id               String               @id @default(cuid())
+  numero_nf        String
+  contrato_id      String
+  valor_total      Float
+  data_emissao     DateTime?
+  contrato         Contrato             @relation(fields: [contrato_id], references: [id], onDelete: Cascade)
+  itens            NotaFiscalItem[]
+  ordens_bancarias OrdemBancariaNotaFiscal[]
+  createdAt        DateTime             @default(now())
+  updatedAt        DateTime             @updatedAt
+}
+
+model NotaFiscalItem {
+  id               String         @id @default(cuid())
+  nota_fiscal_id   String
+  contrato_item_id String
+  quantidade       Float
+  valor_cobrado    Float
+  nota_fiscal      NotaFiscal     @relation(fields: [nota_fiscal_id], references: [id], onDelete: Cascade)
+  contrato_item    ContratoItem   @relation(fields: [contrato_item_id], references: [id], onDelete: Cascade)
+  tombamentos      Tombamento[]
+  createdAt        DateTime       @default(now())
+  updatedAt        DateTime       @updatedAt
+}
+
+model OrdemBancaria {
+  id             String                    @id @default(cuid())
+  numero_ob      String
+  data_pagamento DateTime?
+  valor_ob       Float
+  empenhos       OrdemBancariaEmpenho[]
+  notas_fiscais  OrdemBancariaNotaFiscal[]
+  contratos      OrdemBancariaContrato[]
+  createdAt      DateTime                  @default(now())
+  updatedAt      DateTime                  @updatedAt
+}
+
+model Tombamento {
+  id                  String         @id @default(cuid())
+  guia_tombo          String
+  nota_fiscal_item_id String
+  localizacao         String?
+  historico           String?
+  nota_fiscal_item    NotaFiscalItem @relation(fields: [nota_fiscal_item_id], references: [id], onDelete: Cascade)
+  createdAt           DateTime       @default(now())
+  updatedAt           DateTime       @updatedAt
+}
+
+// Relacionamentos N:M
+model OrdemBancariaNotaFiscal {
+  ob_id               String
+  nf_id               String
+  valor_pago_nesta_ob Float
+  ob                  OrdemBancaria @relation(fields: [ob_id], references: [id], onDelete: Cascade)
+  nf                  NotaFiscal    @relation(fields: [nf_id], references: [id], onDelete: Cascade)
+  @@id([ob_id, nf_id])
+}
+
+model OrdemBancariaEmpenho {
+  ob_id                  String
+  empenho_id             String
+  valor_abatido_nesta_ob Float
+  ob                     OrdemBancaria @relation(fields: [ob_id], references: [id], onDelete: Cascade)
+  empenho                Empenho       @relation(fields: [empenho_id], references: [id], onDelete: Cascade)
+  @@id([ob_id, empenho_id])
+}
+
+model OrdemBancariaContrato {
+  ob_id         String
+  contrato_id   String
+  valor_pago    Float
+  ob            OrdemBancaria @relation(fields: [ob_id], references: [id], onDelete: Cascade)
+  contrato      Contrato      @relation(fields: [contrato_id], references: [id], onDelete: Cascade)
+  @@id([ob_id, contrato_id])
+}
