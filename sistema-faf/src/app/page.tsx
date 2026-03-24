@@ -1,58 +1,31 @@
 import { SearchForm } from '@/components/SearchForm';
 import { Sidebar } from '@/components/Sidebar';
 import { prisma } from '@/lib/prisma';
-import { getExcelAggregates } from '@/lib/excel';
+import { getAuthorizedTotals, getExecutedTotals } from '@/lib/excel';
 
 export const dynamic = 'force-dynamic';
 
 export default async function Home() {
-  const excelData = getExcelAggregates();
+  // Read authorized values directly from Dados FAF.xlsx
+  const authorizedData = getAuthorizedTotals();
+  // Read executed values (unique OBs sum) directly from PAINEL - FAF novo v2.xlsx
+  const executedData = getExecutedTotals();
+
+  // Load FAF instruments with process count from DB
   const fafs = await prisma.fafPlanoLdo.findMany({
     include: {
       conta_bancaria: true,
-      processos: {
-        include: {
-          empenhos: { include: { ordens_bancarias: { include: { ob: true } } } },
-          contratos: {
-            include: {
-              ordens_bancarias: { include: { ob: true } },
-              notas_fiscais: { include: { ordens_bancarias: { include: { ob: true } } } }
-            }
-          }
-        }
-      }
+      processos: { select: { id: true } }
     },
-    orderBy: { instrumento: 'asc' }
+    orderBy: [{ instrumento: 'asc' }, { modalidade: 'asc' }]
   });
 
   const dashboardData = fafs.map(faf => {
     const key = `${faf.instrumento}|${faf.modalidade}`;
-    const totalAutorizado = excelData[key] || 0;
-
-    const uniqueOBs = new Map<string, number>();
-
-    faf.processos.forEach(proc => {
-      proc.empenhos.forEach(emp => {
-        emp.ordens_bancarias.forEach(obRelation => {
-          uniqueOBs.set(obRelation.ob.id, obRelation.ob.valor_ob);
-        });
-      });
-      proc.contratos.forEach(ct => {
-        ct.ordens_bancarias.forEach(obRelation => {
-          uniqueOBs.set(obRelation.ob.id, obRelation.ob.valor_ob);
-        });
-        ct.notas_fiscais.forEach(nf => {
-          nf.ordens_bancarias.forEach(obRelation => {
-            uniqueOBs.set(obRelation.ob.id, obRelation.ob.valor_ob);
-          });
-        });
-      });
-    });
-
-    const totalExecutado = Array.from(uniqueOBs.values()).reduce((acc, val) => acc + val, 0);
+    const totalAutorizado = authorizedData[key] ?? 0;
+    const totalExecutado = executedData[key] ?? 0;
     const saldo = totalAutorizado - totalExecutado;
     const porcentagemExecucao = totalAutorizado > 0 ? (totalExecutado / totalAutorizado) * 100 : 0;
-
     return {
       id: faf.id,
       instrumento: faf.instrumento,
@@ -61,146 +34,173 @@ export default async function Home() {
       totalAutorizado,
       totalExecutado,
       saldo,
-      porcentagemExecucao
+      porcentagemExecucao,
+      numProcessos: faf.processos.length,
     };
   });
 
-  // Global sums
-  const globalAutorizado = dashboardData.reduce((acc, d) => acc + d.totalAutorizado, 0);
-  const globalExecutado = dashboardData.reduce((acc, d) => acc + d.totalExecutado, 0);
+  // Global totals
+  const globalAutorizado = dashboardData.reduce((s, d) => s + d.totalAutorizado, 0);
+  const globalExecutado = dashboardData.reduce((s, d) => s + d.totalExecutado, 0);
   const globalSaldo = globalAutorizado - globalExecutado;
+  const globalPerc = globalAutorizado > 0 ? (globalExecutado / globalAutorizado) * 100 : 0;
+
+  // Group by instrument (summming modalidades)
+  const byInstrumento = dashboardData.reduce<Record<string, { aut: number; exec: number }>>((map, d) => {
+    if (!map[d.instrumento]) map[d.instrumento] = { aut: 0, exec: 0 };
+    map[d.instrumento].aut += d.totalAutorizado;
+    map[d.instrumento].exec += d.totalExecutado;
+    return map;
+  }, {});
+
+  const fmt = (n: number) => n.toLocaleString('pt-BR', { minimumFractionDigits: 2 });
+  const pct = (exec: number, aut: number) => {
+    if (!aut || isNaN(exec / aut)) return 0;
+    return Math.min((exec / aut) * 100, 999);
+  };
+  const barColor = (p: number) => p >= 100 ? 'bg-red-500' : p >= 80 ? 'bg-amber-500' : 'bg-emerald-500';
 
   return (
     <div className="flex min-h-screen bg-slate-50 text-slate-900 font-sans">
       <Sidebar currentPath="/" />
 
       <main className="flex-1 p-8">
-        <div className="max-w-6xl mx-auto">
-          <div className="mb-10">
-            <h2 className="text-3xl font-bold tracking-tight text-slate-900 mb-2 uppercase">Painel de Execução FAF</h2>
-            <p className="text-slate-500 mb-6">Comparativo de Valores Autorizados vs Executados por Instrumento / Conta.</p>
+        <div className="max-w-7xl mx-auto">
+
+          {/* Header */}
+          <div className="mb-8">
+            <h2 className="text-3xl font-bold tracking-tight text-slate-900 mb-1 uppercase">Painel de Execução FAF</h2>
+            <p className="text-slate-500 text-sm mb-6">Comparativo: Valores Autorizados (Dados FAF) vs. Pagamentos Realizados (OBs do PAINEL)</p>
             <SearchForm />
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-10">
-            <div className="bg-white p-6 rounded-lg border border-slate-200 shadow-sm relative overflow-hidden">
-              <div className="absolute top-0 right-0 w-16 h-16 bg-slate-100 rounded-bl-full -mr-4 -mt-4 z-0"></div>
-              <p className="text-sm font-semibold text-slate-500 uppercase tracking-widest mb-1 relative z-10">Orçamento Autorizado</p>
-              <p className="text-3xl font-bold text-slate-900 relative z-10">R$ {globalAutorizado.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</p>
+          {/* Summary cards */}
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-10">
+            <div className="bg-white p-5 rounded-lg border border-slate-200 shadow-sm">
+              <p className="text-[10px] font-bold text-slate-400 uppercase tracking-[0.2em] mb-1">Autorizado Total</p>
+              <p className="text-2xl font-bold text-slate-900 font-mono">R$ {fmt(globalAutorizado)}</p>
             </div>
-            <div className="bg-emerald-50/50 p-6 rounded-lg border border-emerald-200 shadow-sm relative overflow-hidden">
-              <div className="absolute top-0 right-0 w-16 h-16 bg-emerald-100/50 rounded-bl-full -mr-4 -mt-4 z-0"></div>
-              <p className="text-sm font-semibold text-emerald-700 uppercase tracking-widest mb-1 relative z-10">Total Executado (OBs)</p>
-              <p className="text-3xl font-bold text-emerald-800 relative z-10">R$ {globalExecutado.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</p>
+            <div className="bg-white p-5 rounded-lg border border-slate-200 shadow-sm">
+              <p className="text-[10px] font-bold text-slate-400 uppercase tracking-[0.2em] mb-1">Executado (OBs)</p>
+              <p className="text-2xl font-bold text-emerald-700 font-mono">R$ {fmt(globalExecutado)}</p>
             </div>
-            <div className="bg-amber-50/50 p-6 rounded-lg border border-amber-200 shadow-sm relative overflow-hidden">
-              <div className="absolute top-0 right-0 w-16 h-16 bg-amber-100/50 rounded-bl-full -mr-4 -mt-4 z-0"></div>
-              <p className="text-sm font-semibold text-amber-700 uppercase tracking-widest mb-1 relative z-10">Saldo Restante</p>
-              <p className="text-3xl font-bold text-amber-800 relative z-10">R$ {globalSaldo.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</p>
+            <div className="bg-white p-5 rounded-lg border border-slate-200 shadow-sm">
+              <p className="text-[10px] font-bold text-slate-400 uppercase tracking-[0.2em] mb-1">Saldo Disponível</p>
+              <p className={`text-2xl font-bold font-mono ${globalSaldo < 0 ? 'text-red-700' : 'text-amber-700'}`}>R$ {fmt(globalSaldo)}</p>
+            </div>
+            <div className="bg-slate-900 p-5 rounded-lg border border-slate-800 shadow-md">
+              <p className="text-[10px] font-bold text-amber-500/70 uppercase tracking-[0.2em] mb-1">% Execução Global</p>
+              <p className="text-2xl font-bold text-amber-500 font-mono">{pct(globalExecutado, globalAutorizado).toFixed(1)}%</p>
             </div>
           </div>
 
-          {/* Resumo por Ano */}
-          <div className="mb-10">
-            <div className="bg-white rounded-xl border border-neutral-200 overflow-hidden shadow-sm">
-              <div className="px-6 py-5 border-b border-neutral-200 bg-neutral-50">
-                <h3 className="text-lg font-semibold text-neutral-800">Resumo de Execução por Ano</h3>
-              </div>
-              <div className="p-0">
-                <table className="min-w-full divide-y divide-neutral-200">
-                  <thead className="bg-neutral-50">
-                    <tr>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-neutral-500 uppercase tracking-wider">Ano</th>
-                      <th className="px-6 py-3 text-right text-xs font-medium text-neutral-500 uppercase tracking-wider">Total Autorizado</th>
-                      <th className="px-6 py-3 text-right text-xs font-medium text-neutral-500 uppercase tracking-wider">Total Executado</th>
-                      <th className="px-6 py-3 text-right text-xs font-medium text-neutral-500 uppercase tracking-wider">Saldo</th>
-                      <th className="px-6 py-3 text-center text-xs font-medium text-neutral-500 uppercase tracking-wider">%</th>
+          {/* Summary by Instrument */}
+          <div className="mb-8 bg-white rounded-lg border border-slate-200 overflow-hidden shadow-sm">
+            <div className="px-6 py-4 border-b border-slate-200 bg-slate-50">
+              <h3 className="text-xs font-bold text-slate-800 uppercase tracking-widest">Resumo por Instrumento</h3>
+            </div>
+            <table className="min-w-full divide-y divide-slate-100">
+              <thead className="bg-slate-50">
+                <tr>
+                  <th className="px-6 py-3 text-left text-xs font-bold text-slate-500 uppercase tracking-wider">Instrumento</th>
+                  <th className="px-6 py-3 text-right text-xs font-bold text-slate-500 uppercase tracking-wider">Autorizado</th>
+                  <th className="px-6 py-3 text-right text-xs font-bold text-slate-500 uppercase tracking-wider">Executado (OBs)</th>
+                  <th className="px-6 py-3 text-right text-xs font-bold text-slate-500 uppercase tracking-wider">Saldo</th>
+                  <th className="px-6 py-3 text-center text-xs font-bold text-slate-500 uppercase tracking-wider w-48">Execução</th>
+                </tr>
+              </thead>
+              <tbody className="bg-white divide-y divide-slate-100">
+                {Object.entries(byInstrumento).sort(([a], [b]) => a.localeCompare(b)).map(([instrumento, { aut, exec }]) => {
+                  const saldo = aut - exec;
+                  const p = pct(exec, aut);
+                  return (
+                    <tr key={instrumento} className="hover:bg-slate-50/50 transition-colors">
+                      <td className="px-6 py-3 text-sm font-bold text-slate-900">{instrumento}</td>
+                      <td className="px-6 py-3 text-sm text-slate-700 text-right font-mono">{aut > 0 ? `R$ ${fmt(aut)}` : <span className="text-slate-300">—</span>}</td>
+                      <td className="px-6 py-3 text-sm text-emerald-700 font-bold text-right font-mono">R$ {fmt(exec)}</td>
+                      <td className={`px-6 py-3 text-sm text-right font-mono font-medium ${saldo < 0 ? 'text-red-600' : 'text-amber-700'}`}>
+                        {aut > 0 ? `R$ ${fmt(saldo)}` : <span className="text-slate-300">—</span>}
+                      </td>
+                      <td className="px-6 py-3 text-center">
+                        <div className="flex items-center justify-center gap-2">
+                          <div className="w-24 bg-slate-200 rounded-full h-2 overflow-hidden">
+                            <div className={`h-2 rounded-full ${barColor(p)}`} style={{ width: `${Math.min(p, 100)}%` }} />
+                          </div>
+                          <span className={`text-xs font-bold w-12 text-left ${aut === 0 ? 'text-slate-300' : p >= 100 ? 'text-red-600' : 'text-slate-700'}`}>
+                            {aut > 0 ? `${p.toFixed(1)}%` : '—'}
+                          </span>
+                        </div>
+                      </td>
                     </tr>
-                  </thead>
-                  <tbody className="bg-white divide-y divide-neutral-200">
-                    {Array.from(new Set(dashboardData.map(d => d.instrumento.split(' ').pop()))).filter(year => year && !isNaN(Number(year))).sort().map(year => {
-                      const yearData = dashboardData.filter(d => d.instrumento.endsWith(year!));
-                      const totalAut = yearData.reduce((acc, d) => acc + d.totalAutorizado, 0);
-                      const totalExec = yearData.reduce((acc, d) => acc + d.totalExecutado, 0);
-                      const perc = totalAut > 0 ? (totalExec / totalAut) * 100 : 0;
-
-                      return (
-                        <tr key={year}>
-                          <td className="px-6 py-4 whitespace-nowrap text-sm font-bold text-neutral-900">{year}</td>
-                          <td className="px-6 py-4 whitespace-nowrap text-sm text-neutral-900 text-right">
-                            R$ {totalAut.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
-                          </td>
-                          <td className="px-6 py-4 whitespace-nowrap text-sm text-green-700 font-bold text-right">
-                            R$ {totalExec.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
-                          </td>
-                          <td className="px-6 py-4 whitespace-nowrap text-sm text-amber-700 text-right font-medium">
-                            R$ {(totalAut - totalExec).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
-                          </td>
-                          <td className="px-6 py-4 whitespace-nowrap text-sm text-neutral-500 text-center">
-                            <span className="font-medium">{perc.toFixed(1)}%</span>
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            </div>
+                  );
+                })}
+              </tbody>
+            </table>
           </div>
 
+          {/* Detail by Conta / Instrument / Modalidade */}
           <div className="bg-white rounded-lg border border-slate-200 overflow-hidden shadow-sm">
             <div className="px-6 py-4 border-b border-slate-200 bg-slate-50 flex justify-between items-center">
-              <h3 className="text-sm font-bold text-slate-800 uppercase tracking-widest">Status Detalhado por Instrumento</h3>
+              <h3 className="text-xs font-bold text-slate-800 uppercase tracking-widest">Detalhamento por Conta · Modalidade</h3>
+              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Fonte: Dados FAF.xlsx + PAINEL FAF</span>
             </div>
-            <div className="p-0">
-              {dashboardData.length > 0 ? (
-                <table className="min-w-full divide-y divide-slate-200">
-                  <thead className="bg-slate-50">
-                    <tr>
-                      <th className="px-6 py-3 text-left text-xs font-bold text-slate-500 uppercase tracking-wider">Conta</th>
-                      <th className="px-6 py-3 text-left text-xs font-bold text-slate-500 uppercase tracking-wider">Instrumento</th>
-                      <th className="px-6 py-3 text-left text-xs font-bold text-slate-500 uppercase tracking-wider">Modalidade</th>
-                      <th className="px-6 py-3 text-right text-xs font-bold text-slate-500 uppercase tracking-wider">Total Autorizado</th>
-                      <th className="px-6 py-3 text-right text-xs font-bold text-slate-500 uppercase tracking-wider">Pagamentos (OBs)</th>
-                      <th className="px-6 py-3 text-right text-xs font-bold text-slate-500 uppercase tracking-wider">Saldo Restante</th>
-                      <th className="px-6 py-3 text-center text-xs font-bold text-slate-500 uppercase tracking-wider">%</th>
-                    </tr>
-                  </thead>
-                  <tbody className="bg-white divide-y divide-slate-100">
-                    {dashboardData.map(d => (
-                      <tr key={d.id} className="hover:bg-slate-50/50 transition-colors">
-                        <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-slate-600 font-mono tracking-wide">{d.conta}</td>
-                        <td className="px-6 py-4 whitespace-nowrap text-sm font-bold text-slate-900">{d.instrumento}</td>
-                        <td className="px-6 py-4 whitespace-nowrap text-sm text-slate-500">
-                          <span className="bg-slate-100 text-slate-700 px-2 py-1 rounded text-xs font-bold uppercase tracking-wider">{d.modalidade}</span>
+            {dashboardData.length > 0 ? (
+              <table className="min-w-full divide-y divide-slate-100">
+                <thead className="bg-slate-50">
+                  <tr>
+                    <th className="px-4 py-3 text-left text-xs font-bold text-slate-500 uppercase tracking-wider">Conta</th>
+                    <th className="px-4 py-3 text-left text-xs font-bold text-slate-500 uppercase tracking-wider">Instrumento</th>
+                    <th className="px-4 py-3 text-left text-xs font-bold text-slate-500 uppercase tracking-wider">Modalidade</th>
+                    <th className="px-4 py-3 text-right text-xs font-bold text-slate-500 uppercase tracking-wider">Proc.</th>
+                    <th className="px-4 py-3 text-right text-xs font-bold text-slate-500 uppercase tracking-wider">Autorizado</th>
+                    <th className="px-4 py-3 text-right text-xs font-bold text-slate-500 uppercase tracking-wider">Executado</th>
+                    <th className="px-4 py-3 text-right text-xs font-bold text-slate-500 uppercase tracking-wider">Saldo</th>
+                    <th className="px-4 py-3 text-center text-xs font-bold text-slate-500 uppercase tracking-wider">%</th>
+                  </tr>
+                </thead>
+                <tbody className="bg-white divide-y divide-slate-100">
+                  {dashboardData.map(d => {
+                    const p = pct(d.totalExecutado, d.totalAutorizado);
+                    const hasAut = d.totalAutorizado > 0;
+                    return (
+                      <tr key={d.id} className={`hover:bg-slate-50 transition-colors ${!hasAut && d.totalExecutado === 0 ? 'opacity-40' : ''}`}>
+                        <td className="px-4 py-2 text-xs font-mono font-bold text-slate-600">{d.conta}</td>
+                        <td className="px-4 py-2 text-sm font-bold text-slate-900">{d.instrumento}</td>
+                        <td className="px-4 py-2">
+                          <span className="bg-slate-100 text-slate-700 px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider">{d.modalidade}</span>
                         </td>
-                        <td className="px-6 py-4 whitespace-nowrap text-sm text-slate-900 font-medium text-right">
-                          R$ {d.totalAutorizado.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+                        <td className="px-4 py-2 text-right">
+                          <span className="bg-slate-100 text-slate-600 px-2 py-0.5 rounded-full text-[10px] font-bold">{d.numProcessos}</span>
                         </td>
-                        <td className="px-6 py-4 whitespace-nowrap text-sm text-emerald-700 font-bold text-right">
-                          R$ {d.totalExecutado.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+                        <td className="px-4 py-2 text-sm font-mono text-slate-800 text-right">
+                          {hasAut ? `R$ ${fmt(d.totalAutorizado)}` : <span className="text-slate-300">—</span>}
                         </td>
-                        <td className="px-6 py-4 whitespace-nowrap text-sm text-amber-700 font-medium text-right">
-                          R$ {d.saldo.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+                        <td className="px-4 py-2 text-sm font-mono font-bold text-emerald-700 text-right">
+                          {d.totalExecutado > 0 ? `R$ ${fmt(d.totalExecutado)}` : <span className="text-slate-300">—</span>}
                         </td>
-                        <td className="px-6 py-4 whitespace-nowrap text-sm text-slate-500 text-center">
-                          <div className="flex items-center justify-center gap-2">
-                            <span className="font-bold inline-block w-10 text-right">{d.porcentagemExecucao.toFixed(1)}%</span>
-                            <div className="w-16 bg-slate-200 rounded-full h-2 overflow-hidden shadow-inner">
-                              <div className="bg-amber-500 h-2 rounded-full" style={{ width: `${Math.min(isNaN(d.porcentagemExecucao) || !isFinite(d.porcentagemExecucao) ? 0 : d.porcentagemExecucao, 100)}%` }}></div>
+                        <td className={`px-4 py-2 text-sm font-mono font-medium text-right ${d.saldo < 0 ? 'text-red-600' : hasAut ? 'text-amber-700' : 'text-slate-300'}`}>
+                          {hasAut ? `R$ ${fmt(d.saldo)}` : '—'}
+                        </td>
+                        <td className="px-4 py-2 text-center">
+                          {hasAut ? (
+                            <div className="flex items-center justify-center gap-1.5">
+                              <div className="w-14 bg-slate-200 rounded-full h-1.5 overflow-hidden">
+                                <div className={`h-1.5 rounded-full ${barColor(p)}`} style={{ width: `${Math.min(p, 100)}%` }} />
+                              </div>
+                              <span className={`text-[11px] font-bold w-10 text-right ${p >= 100 ? 'text-red-600' : 'text-slate-600'}`}>{p.toFixed(1)}%</span>
                             </div>
-                          </div>
+                          ) : <span className="text-slate-300 text-xs">—</span>}
                         </td>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
-              ) : (
-                <div className="p-8 text-center text-slate-500 font-medium">
-                  Nenhum FAF configurado. Comece adicionando contas e instrumentos.
-                </div>
-              )}
-            </div>
+                    );
+                  })}
+                </tbody>
+              </table>
+            ) : (
+              <div className="p-10 text-center text-slate-400 font-medium text-sm">
+                Nenhum instrumento FAF cadastrado.
+              </div>
+            )}
           </div>
 
         </div>
