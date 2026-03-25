@@ -1,17 +1,11 @@
 import { SearchForm } from '@/components/SearchForm';
 import { Sidebar } from '@/components/Sidebar';
 import { prisma } from '@/lib/prisma';
-import { getAuthorizedTotals, getExecutedTotals } from '@/lib/excel';
 
 export const dynamic = 'force-dynamic';
 
 export default async function Home() {
-  // Read authorized values directly from Dados FAF.xlsx
-  const authorizedData = getAuthorizedTotals();
-  // Read executed values (unique OBs sum) directly from PAINEL - FAF novo v2.xlsx
-  const executedData = getExecutedTotals();
-
-  // Load FAF instruments with process count from DB
+  // Load FAF instruments directly from DB with cached authorized totals
   const fafs = await prisma.fafPlanoLdo.findMany({
     include: {
       conta_bancaria: true,
@@ -21,11 +15,11 @@ export default async function Home() {
   });
 
   const dashboardData = fafs.map(faf => {
-    const key = `${faf.instrumento}|${faf.modalidade}`;
-    const totalAutorizado = authorizedData[key] ?? 0;
-    const totalExecutado = executedData[key] ?? 0;
+    const totalAutorizado = faf.valor_autorizado_total;
+    const totalExecutado = faf.valor_total;
     const saldo = totalAutorizado - totalExecutado;
     const porcentagemExecucao = totalAutorizado > 0 ? (totalExecutado / totalAutorizado) * 100 : 0;
+    
     return {
       id: faf.id,
       instrumento: faf.instrumento,

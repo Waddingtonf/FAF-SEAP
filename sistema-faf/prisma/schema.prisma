@@ -17,17 +17,18 @@ model ContaBancaria {
 }
 
 model FafPlanoLdo {
-  id                String                 @id @default(cuid())
-  instrumento       String                 // Ex: FAF 2016, FAF 2023 Voluntário, FONTE 500
-  modalidade        String?                // Ex: OBRAS, CUSTEIO, CAPITAL
-  ano               Int?                   // Optional numeric year 
-  conta_bancaria_id String
-  valor_total       Float                  @default(0)
-  conta_bancaria    ContaBancaria          @relation(fields: [conta_bancaria_id], references: [id], onDelete: Cascade)
-  planos_aplicacao  PlanoAplicacaoDetalhado[]
-  processos         Processo[]
-  createdAt         DateTime               @default(now())
-  updatedAt         DateTime               @updatedAt
+  id                    String                 @id @default(cuid())
+  instrumento           String                 // Ex: FAF 2016, FAF 2023 Voluntário, FONTE 500
+  modalidade            String?                // Ex: OBRAS, CUSTEIO, CAPITAL
+  ano                   Int?                   // Optional numeric year 
+  conta_bancaria_id     String
+  valor_total           Float                  @default(0)
+  valor_autorizado_total Float                  @default(0) // From Dados FAF.xlsx
+  conta_bancaria        ContaBancaria          @relation(fields: [conta_bancaria_id], references: [id], onDelete: Cascade)
+  planos_aplicacao      PlanoAplicacaoDetalhado[]
+  processos             Processo[]
+  createdAt             DateTime               @default(now())
+  updatedAt             DateTime               @updatedAt
 }
 
 model PlanoAplicacaoDetalhado {
@@ -52,6 +53,7 @@ model Processo {
   faf_id             String
   plano_aplicacao_id String?
   fornecedor         String?
+  status             String?                  @default("EM_ANDAMENTO") // EM_ANDAMENTO, CONCLUIDO, CANCELADO
   faf                FafPlanoLdo              @relation(fields: [faf_id], references: [id], onDelete: Cascade)
   plano_aplicacao    PlanoAplicacaoDetalhado? @relation(fields: [plano_aplicacao_id], references: [id])
   contratos          Contrato[]
@@ -62,14 +64,17 @@ model Processo {
 
 model Contrato {
   id              String          @id @default(cuid())
-  numero_contrato String
+  numero_contrato String          @unique
   processo_id     String
   fornecedor      String?
   objeto          String?
   valor_contrato  Float
+  data_assinatura DateTime?
+  status          String?         @default("ATIVO") // ATIVO, ENCERRADO, CANCELADO
   processo        Processo        @relation(fields: [processo_id], references: [id], onDelete: Cascade)
   itens           ContratoItem[]
   notas_fiscais   NotaFiscal[]
+  empenhos        Empenho[]
   ordens_bancarias OrdemBancariaContrato[]
   createdAt       DateTime        @default(now())
   updatedAt       DateTime        @updatedAt
@@ -89,11 +94,15 @@ model ContratoItem {
 
 model Empenho {
   id               String               @id @default(cuid())
-  numero_empenho   String
+  numero_empenho   String               @unique
   processo_id      String
+  contrato_id      String?
   valor_empenho    Float
   data_empenho     DateTime?
+  status           String?              @default("EMITIDO") // EMITIDO, LIQUIDADO, ANULADO
   processo         Processo             @relation(fields: [processo_id], references: [id], onDelete: Cascade)
+  contrato         Contrato?            @relation(fields: [contrato_id], references: [id])
+  notas_fiscais    NotaFiscal[]
   ordens_bancarias OrdemBancariaEmpenho[]
   createdAt        DateTime             @default(now())
   updatedAt        DateTime             @updatedAt
@@ -103,9 +112,12 @@ model NotaFiscal {
   id               String               @id @default(cuid())
   numero_nf        String
   contrato_id      String
+  empenho_id       String?
   valor_total      Float
   data_emissao     DateTime?
+  status           String?              @default("RECEBIDA") // RECEBIDA, PAGA, CANCELADA
   contrato         Contrato             @relation(fields: [contrato_id], references: [id], onDelete: Cascade)
+  empenho          Empenho?             @relation(fields: [empenho_id], references: [id])
   itens            NotaFiscalItem[]
   ordens_bancarias OrdemBancariaNotaFiscal[]
   createdAt        DateTime             @default(now())
@@ -127,7 +139,7 @@ model NotaFiscalItem {
 
 model OrdemBancaria {
   id             String                    @id @default(cuid())
-  numero_ob      String
+  numero_ob      String                    @unique
   data_pagamento DateTime?
   valor_ob       Float
   empenhos       OrdemBancariaEmpenho[]

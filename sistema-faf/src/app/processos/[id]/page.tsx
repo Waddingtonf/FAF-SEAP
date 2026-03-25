@@ -74,6 +74,11 @@ export default async function ProcessoDetalhesPage({
                             <h2 className="text-3xl font-bold tracking-tight text-slate-900 uppercase">Processo <span className="font-mono text-amber-600 bg-amber-50 px-2 rounded">{processo.numero_processo}</span></h2>
                             <div className="mt-4 flex flex-wrap gap-y-2 gap-x-6 text-[11px] font-bold uppercase tracking-widest text-slate-500">
                                 <span className="flex items-center gap-2">
+                                    <span className="text-slate-400">Status:</span>
+                                    <span className="bg-emerald-100 text-emerald-700 px-2 py-0.5 rounded-full">{processo.status || 'EM_ANDAMENTO'}</span>
+                                </span>
+                                <span className="text-slate-200">|</span>
+                                <span className="flex items-center gap-2">
                                     <span className="text-slate-400">Fornecedor:</span>
                                     <span className="text-slate-900">{processo.fornecedor || 'NÃO INFORMADO'}</span>
                                 </span>
